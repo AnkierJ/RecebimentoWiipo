@@ -522,8 +522,8 @@ def manager_view(client, token: str):
                 with col_info:
                     icon = "✅" if row.card_received else "⬜"
                     st.markdown(f"**{icon} {row.nome}**")
-                    if row.cargo:
-                        st.caption(row.cargo)
+                    #if row.cargo:
+                        #st.caption(row.cargo)
                 with col_check:
                     st.checkbox(
                         "Recebeu",
