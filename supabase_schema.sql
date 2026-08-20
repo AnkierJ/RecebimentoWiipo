@@ -28,12 +28,13 @@ comment on column establishments.access_token is
 create table if not exists employees (
     id                uuid primary key default gen_random_uuid(),
     establishment_id  uuid not null references establishments(id) on delete cascade,
-    matricula         text not null unique,
+    matricula         text unique,             -- nulo para colaboradores adicionados manualmente pelo gestor
     nome              text not null,
     cargo             text,
     card_received     boolean not null default false,
     received_at       timestamptz,
     updated_by        text,                    -- nome do gestor que fez a última marcação
+    manually_added    boolean not null default false,  -- true = incluído pelo gestor, não veio do CSV do RH
     created_at        timestamptz not null default now()
 );
 

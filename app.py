@@ -104,9 +104,10 @@ def update_employee(client, emp_id: str, received: bool, updated_by: str | None)
     ).eq("id", emp_id).execute()
 
 
-def _save_card_toggle(client, emp_id: str, checkbox_key: str):
+def _save_card_toggle(client, emp_id: str, nome: str, checkbox_key: str):
     received = st.session_state[checkbox_key]
     update_employee(client, emp_id, received, st.session_state.get("manager_name"))
+    st.toast(f"{nome}: {'recebido' if received else 'desmarcado'}", icon="✅" if received else "⬜")
 
 
 def bulk_update_employees(client, ids: list[str], received: bool, updated_by: str | None):
@@ -240,6 +241,39 @@ def admin_view(client):
             "O gestor pode voltar a ele quantas vezes precisar para atualizar o progresso."
         )
 
+    st.subheader("Colaboradores adicionados manualmente pelos gestores")
+    manual_rows = (
+        client.table("employees")
+        .select("nome, cargo, updated_by, received_at, establishments(code, name)")
+        .eq("manually_added", True)
+        .order("received_at", desc=True)
+        .execute()
+        .data
+    )
+    if manual_rows:
+        manual_df = pd.DataFrame(
+            [
+                {
+                    "Unidade": f"{r['establishments']['code']} - {r['establishments']['name']}"
+                    if r.get("establishments")
+                    else "-",
+                    "Colaborador": r["nome"],
+                    "Cargo": r["cargo"],
+                    "Adicionado por": r["updated_by"] or "-",
+                    "Data": r["received_at"],
+                }
+                for r in manual_rows
+            ]
+        )
+        st.dataframe(manual_df, hide_index=True, use_container_width=True)
+        st.caption(
+            "Esses colaboradores não vieram do CSV do RH — foram incluídos diretamente pelo "
+            "gestor da unidade porque receberam o cartão mas não estavam na listagem original. "
+            "Vale conferir/consolidar com o cadastro do RH."
+        )
+    else:
+        st.caption("Nenhum colaborador adicionado manualmente até o momento.")
+
     st.divider()
     if st.button("Sair do painel"):
         st.session_state["admin_ok"] = False
@@ -320,26 +354,64 @@ def manager_view(client, token: str):
 
     st.divider()
 
-    for row in filtered_df.itertuples():
-        checkbox_key = f"card_chk_{row.id}"
-        with st.container(border=True):
-            col_info, col_check = st.columns([0.72, 0.28], vertical_alignment="center")
-            with col_info:
-                icon = "✅" if row.card_received else "⬜"
-                st.markdown(f"**{icon} {row.nome}**")
-                if row.cargo:
-                    st.caption(row.cargo)
-            with col_check:
-                st.checkbox(
-                    "Recebeu",
-                    value=bool(row.card_received),
-                    key=checkbox_key,
-                    on_change=_save_card_toggle,
-                    args=(client, row.id, checkbox_key),
-                )
+    list_box = st.container(height=420, border=False)
+    with list_box:
+        for row in filtered_df.itertuples():
+            checkbox_key = f"card_chk_{row.id}"
+            with st.container(border=True):
+                col_info, col_check = st.columns([0.72, 0.28], vertical_alignment="center")
+                with col_info:
+                    icon = "✅" if row.card_received else "⬜"
+                    st.markdown(f"**{icon} {row.nome}**")
+                    if row.cargo:
+                        st.caption(row.cargo)
+                with col_check:
+                    st.checkbox(
+                        "Recebeu",
+                        value=bool(row.card_received),
+                        key=checkbox_key,
+                        on_change=_save_card_toggle,
+                        args=(client, row.id, row.nome, checkbox_key),
+                    )
 
     if filtered_df.empty:
         st.info("Nenhum colaborador encontrado para essa busca.")
+
+    st.divider()
+    with st.expander("Colaborador recebeu o cartão mas não está na lista? Adicione aqui"):
+        with st.form("add_employee_form", clear_on_submit=True):
+            new_nome = st.text_input("Nome do colaborador")
+            new_cargo = st.text_input("Cargo (opcional)")
+            add_submitted = st.form_submit_button("Adicionar como recebido", type="primary")
+        if add_submitted:
+            if new_nome.strip():
+                client.table("employees").insert(
+                    {
+                        "establishment_id": est["id"],
+                        "nome": new_nome.strip(),
+                        "cargo": new_cargo.strip() or None,
+                        "card_received": True,
+                        "received_at": datetime.now(timezone.utc).isoformat(),
+                        "updated_by": manager_name or None,
+                        "manually_added": True,
+                    }
+                ).execute()
+                st.success(f"{new_nome.strip()} adicionado(a) à lista.")
+                st.rerun()
+            else:
+                st.warning("Informe ao menos o nome do colaborador.")
+
+    st.markdown(
+        f"""
+        <div style="background:rgba(106,44,229,0.12); border:1px solid rgba(106,44,229,0.4);
+                    border-radius:10px; padding:0.9rem 1.1rem; margin-top:0.8rem; font-size:0.92rem;">
+            Algum colaborador listado foi desligado ou precisa de algum tipo de suporte?
+            Entre em contato com
+            <a href="tel:+5584936180447" style="color:{PURPLE}; font-weight:600;">+55 84 93618-0447</a>.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     st.caption(
         "Você pode voltar a este mesmo link/QR Code a qualquer momento para conferir "
