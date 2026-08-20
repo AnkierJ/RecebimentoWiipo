@@ -94,22 +94,6 @@ def build_link(base_url: str, token: str) -> str:
     return f"{base_url.rstrip('/')}/?token={token}"
 
 
-def update_employee(client, emp_id: str, received: bool, updated_by: str | None):
-    client.table("employees").update(
-        {
-            "card_received": received,
-            "received_at": datetime.now(timezone.utc).isoformat() if received else None,
-            "updated_by": updated_by or None,
-        }
-    ).eq("id", emp_id).execute()
-
-
-def _save_card_toggle(client, emp_id: str, nome: str, checkbox_key: str):
-    received = st.session_state[checkbox_key]
-    update_employee(client, emp_id, received, st.session_state.get("manager_name"))
-    st.toast(f"{nome}: {'recebido' if received else 'desmarcado'}", icon="✅" if received else "⬜")
-
-
 def bulk_update_employees(client, ids: list[str], received: bool, updated_by: str | None):
     if not ids:
         return
@@ -338,19 +322,17 @@ def manager_view(client, token: str):
         filtered_df = filtered_df[filtered_df["nome"].str.contains(search, case=False, na=False)]
     filtered_df = filtered_df.reset_index(drop=True)
 
-    bcol1, bcol2 = st.columns(2)
-    if bcol1.button("Marcar todos (filtrados) como recebido", use_container_width=True):
-        ids = filtered_df["id"].tolist()
-        bulk_update_employees(client, ids, True, manager_name)
-        for emp_id in ids:
-            st.session_state[f"card_chk_{emp_id}"] = True
+    if st.button("Marcar todos (filtrados) como recebido", use_container_width=True):
+        for emp_id, already_received in zip(filtered_df["id"], filtered_df["card_received"]):
+            if not already_received:
+                st.session_state[f"card_chk_{emp_id}"] = True
         st.rerun()
-    if bcol2.button("Desmarcar todos (filtrados)", use_container_width=True):
-        ids = filtered_df["id"].tolist()
-        bulk_update_employees(client, ids, False, manager_name)
-        for emp_id in ids:
-            st.session_state[f"card_chk_{emp_id}"] = False
-        st.rerun()
+
+    st.caption(
+        "Marque quem recebeu o cartão e clique em **Salvar alterações** no fim da lista. "
+        "Uma vez salvo, a confirmação não pode ser desfeita por aqui — se marcou alguém "
+        "por engano, entre em contato pelo telefone abaixo."
+    )
 
     st.divider()
 
@@ -370,12 +352,24 @@ def manager_view(client, token: str):
                         "Recebeu",
                         value=bool(row.card_received),
                         key=checkbox_key,
-                        on_change=_save_card_toggle,
-                        args=(client, row.id, row.nome, checkbox_key),
+                        disabled=bool(row.card_received),
                     )
 
     if filtered_df.empty:
         st.info("Nenhum colaborador encontrado para essa busca.")
+
+    if st.button("Salvar alterações", type="primary", use_container_width=True):
+        ids_to_confirm = [
+            emp_id
+            for emp_id, already_received in zip(base_df["id"], base_df["card_received"])
+            if not already_received and st.session_state.get(f"card_chk_{emp_id}")
+        ]
+        if ids_to_confirm:
+            bulk_update_employees(client, ids_to_confirm, True, manager_name)
+            st.success(f"{len(ids_to_confirm)} confirmação(ões) salva(s) com sucesso.")
+            st.rerun()
+        else:
+            st.info("Nenhuma marcação nova para salvar.")
 
     st.divider()
     with st.expander("Colaborador recebeu o cartão mas não está na lista? Adicione aqui"):
