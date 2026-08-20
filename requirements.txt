@@ -1,0 +1,6 @@
+streamlit>=1.32
+supabase>=2.4
+pandas>=2.0
+plotly>=5.20
+qrcode[pil]>=7.4
+Pillow>=10.0
