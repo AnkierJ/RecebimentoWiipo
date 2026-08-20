@@ -104,6 +104,11 @@ def update_employee(client, emp_id: str, received: bool, updated_by: str | None)
     ).eq("id", emp_id).execute()
 
 
+def _save_card_toggle(client, emp_id: str, checkbox_key: str):
+    received = st.session_state[checkbox_key]
+    update_employee(client, emp_id, received, st.session_state.get("manager_name"))
+
+
 def bulk_update_employees(client, ids: list[str], received: bool, updated_by: str | None):
     if not ids:
         return
@@ -300,37 +305,41 @@ def manager_view(client, token: str):
     filtered_df = filtered_df.reset_index(drop=True)
 
     bcol1, bcol2 = st.columns(2)
-    if bcol1.button("Marcar todos (filtrados) como recebido"):
-        bulk_update_employees(client, filtered_df["id"].tolist(), True, manager_name)
+    if bcol1.button("Marcar todos (filtrados) como recebido", use_container_width=True):
+        ids = filtered_df["id"].tolist()
+        bulk_update_employees(client, ids, True, manager_name)
+        for emp_id in ids:
+            st.session_state[f"card_chk_{emp_id}"] = True
         st.rerun()
-    if bcol2.button("Desmarcar todos (filtrados)"):
-        bulk_update_employees(client, filtered_df["id"].tolist(), False, manager_name)
+    if bcol2.button("Desmarcar todos (filtrados)", use_container_width=True):
+        ids = filtered_df["id"].tolist()
+        bulk_update_employees(client, ids, False, manager_name)
+        for emp_id in ids:
+            st.session_state[f"card_chk_{emp_id}"] = False
         st.rerun()
 
-    display_df = filtered_df.rename(
-        columns={"nome": "Colaborador", "cargo": "Cargo", "card_received": "Recebeu"}
-    )[["Colaborador", "Cargo", "Recebeu"]]
+    st.divider()
 
-    edited_df = st.data_editor(
-        display_df,
-        column_config={"Recebeu": st.column_config.CheckboxColumn(required=True)},
-        disabled=["Colaborador", "Cargo"],
-        hide_index=True,
-        use_container_width=True,
-        key="employee_editor",
-    )
+    for row in filtered_df.itertuples():
+        checkbox_key = f"card_chk_{row.id}"
+        with st.container(border=True):
+            col_info, col_check = st.columns([0.72, 0.28], vertical_alignment="center")
+            with col_info:
+                icon = "✅" if row.card_received else "⬜"
+                st.markdown(f"**{icon} {row.nome}**")
+                if row.cargo:
+                    st.caption(row.cargo)
+            with col_check:
+                st.checkbox(
+                    "Recebeu",
+                    value=bool(row.card_received),
+                    key=checkbox_key,
+                    on_change=_save_card_toggle,
+                    args=(client, row.id, checkbox_key),
+                )
 
-    if st.button("Salvar alterações", type="primary"):
-        changed = 0
-        for orig, new in zip(filtered_df.itertuples(), edited_df.itertuples()):
-            if bool(orig.card_received) != bool(new.Recebeu):
-                update_employee(client, orig.id, bool(new.Recebeu), manager_name)
-                changed += 1
-        if changed:
-            st.success(f"{changed} atualização(ões) salva(s) com sucesso.")
-            st.rerun()
-        else:
-            st.info("Nenhuma alteração para salvar.")
+    if filtered_df.empty:
+        st.info("Nenhum colaborador encontrado para essa busca.")
 
     st.caption(
         "Você pode voltar a este mesmo link/QR Code a qualquer momento para conferir "
