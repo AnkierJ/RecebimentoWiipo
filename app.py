@@ -6,10 +6,12 @@ Duas visões no mesmo app, escolhidas pela URL:
   - com `?token=<uuid>`    -> visão do gestor da unidade
 """
 import base64
+import re
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
+import openpyxl
 import pandas as pd
 import plotly.graph_objects as go
 import qrcode
@@ -22,6 +24,7 @@ from reportlab.pdfgen import canvas as pdf_canvas
 from supabase import create_client
 
 ASSETS_DIR = Path(__file__).parent / "Assets"
+DCENTROS_PATH = Path(__file__).parent / "dCentros.xlsx"
 
 NAVY = "#063465"
 DEEP_PURPLE = "#422450"
@@ -40,6 +43,29 @@ def get_client():
 @st.cache_data
 def get_base64(path: Path) -> str:
     return base64.b64encode(Path(path).read_bytes()).decode()
+
+
+def normalize_cnpj(value) -> str:
+    return re.sub(r"\D", "", str(value)) if value else ""
+
+
+@st.cache_data
+def load_dcentros_mapping() -> dict:
+    """CNPJ -> {uf, gerente_nucleo}, a partir da base dCentros (colunas Q=UF, AB=Gerente de núcleo)."""
+    if not DCENTROS_PATH.exists():
+        return {}
+    wb = openpyxl.load_workbook(DCENTROS_PATH, data_only=True, read_only=True)
+    ws = wb["Current view"]
+    mapping = {}
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        cnpj = normalize_cnpj(row[12])  # coluna M
+        if not cnpj:
+            continue
+        mapping[cnpj] = {
+            "uf": (row[16] or "Sem UF").strip() if isinstance(row[16], str) else (row[16] or "Sem UF"),
+            "gerente_nucleo": row[27].strip() if isinstance(row[27], str) and row[27] else "Sem gerente definido",
+        }
+    return mapping
 
 
 def render_header(subtitle: str | None = None):
@@ -196,6 +222,13 @@ def admin_view(client):
         )
         return
 
+    dcentros = load_dcentros_mapping()
+    df["cnpj_norm"] = df["cnpj"].apply(normalize_cnpj)
+    df["UF"] = df["cnpj_norm"].map(lambda c: dcentros.get(c, {}).get("uf", "Sem UF"))
+    df["Gerente de núcleo"] = df["cnpj_norm"].map(
+        lambda c: dcentros.get(c, {}).get("gerente_nucleo", "Sem gerente definido")
+    )
+
     total_emp = int(df["total_employees"].sum())
     total_recv = int(df["received_count"].sum())
     pct = round(100 * total_recv / total_emp, 1) if total_emp else 0.0
@@ -210,7 +243,7 @@ def admin_view(client):
         use_container_width=True,
     )
 
-    st.subheader("Estabelecimentos")
+    st.subheader("Estabelecimentos por UF e Gerente de Núcleo")
     search = st.text_input("Filtrar por nome ou código", key="admin_search")
     view_df = df.copy()
     if search:
@@ -219,24 +252,40 @@ def admin_view(client):
         ].str.contains(search, case=False, na=False)
         view_df = view_df[mask]
 
-    st.dataframe(
-        view_df[["code", "name", "total_employees", "received_count", "pct_complete"]].rename(
-            columns={
-                "code": "Código",
-                "name": "Unidade",
-                "total_employees": "Colaboradores",
-                "received_count": "Recebidos",
-                "pct_complete": "% Concluído",
-            }
-        ),
-        column_config={
-            "% Concluído": st.column_config.ProgressColumn(
-                format="%.1f%%", min_value=0, max_value=100
-            ),
-        },
-        hide_index=True,
-        use_container_width=True,
-    )
+    unmatched = int((view_df["UF"] == "Sem UF").sum())
+    if unmatched:
+        st.caption(
+            f"⚠️ {unmatched} estabelecimento(s) sem correspondência na base dCentros "
+            "(CNPJ não encontrado lá) — agrupado(s) em \"Sem UF\"."
+        )
+
+    column_config = {
+        "% Concluído": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
+    }
+    rename_cols = {
+        "code": "Código",
+        "name": "Unidade",
+        "total_employees": "Colaboradores",
+        "received_count": "Recebidos",
+        "pct_complete": "% Concluído",
+    }
+    table_cols = ["code", "name", "total_employees", "received_count", "pct_complete"]
+
+    for uf in sorted(view_df["UF"].unique()):
+        uf_df = view_df[view_df["UF"] == uf]
+        uf_total = int(uf_df["total_employees"].sum())
+        uf_recv = int(uf_df["received_count"].sum())
+        uf_pct = round(100 * uf_recv / uf_total, 1) if uf_total else 0.0
+        with st.expander(f"{uf} — {len(uf_df)} loja(s) — {uf_recv}/{uf_total} recebidos ({uf_pct}%)"):
+            for gerente in sorted(uf_df["Gerente de núcleo"].unique()):
+                gerente_df = uf_df[uf_df["Gerente de núcleo"] == gerente]
+                st.markdown(f"**{gerente}**")
+                st.dataframe(
+                    gerente_df[table_cols].rename(columns=rename_cols),
+                    column_config=column_config,
+                    hide_index=True,
+                    use_container_width=True,
+                )
 
     base_url = st.secrets.get("app_base_url", "")
     links_df = df[["code", "name", "access_token"]].copy()

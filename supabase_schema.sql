@@ -61,6 +61,7 @@ select
     e.id,
     e.code,
     e.name,
+    e.cnpj,
     e.raw_label,
     e.access_token,
     count(emp.id)                                            as total_employees,
@@ -70,7 +71,7 @@ select
     end                                                        as pct_complete
 from establishments e
 left join employees emp on emp.establishment_id = e.id
-group by e.id, e.code, e.name, e.raw_label, e.access_token
+group by e.id, e.code, e.name, e.cnpj, e.raw_label, e.access_token
 order by e.name;
 
 -- ---------------------------------------------------------

@@ -5,3 +5,4 @@ plotly>=5.20
 qrcode[pil]>=7.4
 Pillow>=10.0
 reportlab>=4.0
+openpyxl>=3.1
