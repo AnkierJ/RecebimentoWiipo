@@ -289,9 +289,6 @@ def manager_view(client, token: str):
     c3.metric("Conclusão", f"{round(100 * received / total, 1)}%")
     st.progress(received / total if total else 0.0)
 
-    with st.expander("Como identificar o cartão Wiipo"):
-        st.image(str(ASSETS_DIR / "CartaoWiipoComCelular.webp"), width=280)
-
     manager_name = st.text_input(
         "Seu nome (fica registrado como responsável pela confirmação)", key="manager_name"
     )
