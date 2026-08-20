@@ -222,12 +222,21 @@ def admin_view(client):
         )
         return
 
-    dcentros = load_dcentros_mapping()
-    df["cnpj_norm"] = df["cnpj"].apply(normalize_cnpj)
-    df["UF"] = df["cnpj_norm"].map(lambda c: dcentros.get(c, {}).get("uf", "Sem UF"))
-    df["Gerente de núcleo"] = df["cnpj_norm"].map(
-        lambda c: dcentros.get(c, {}).get("gerente_nucleo", "Sem gerente definido")
-    )
+    if "cnpj" in df.columns:
+        dcentros = load_dcentros_mapping()
+        df["cnpj_norm"] = df["cnpj"].apply(normalize_cnpj)
+        df["UF"] = df["cnpj_norm"].map(lambda c: dcentros.get(c, {}).get("uf", "Sem UF"))
+        df["Gerente de núcleo"] = df["cnpj_norm"].map(
+            lambda c: dcentros.get(c, {}).get("gerente_nucleo", "Sem gerente definido")
+        )
+    else:
+        st.warning(
+            "A view `establishment_progress` ainda não tem a coluna `cnpj` — rode "
+            "`supabase_migration_cnpj_in_view.sql` no Supabase para habilitar o "
+            "agrupamento por UF e Gerente de Núcleo."
+        )
+        df["UF"] = "Sem UF"
+        df["Gerente de núcleo"] = "Sem gerente definido"
 
     total_emp = int(df["total_employees"].sum())
     total_recv = int(df["received_count"].sum())

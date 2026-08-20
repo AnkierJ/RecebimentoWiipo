@@ -61,17 +61,17 @@ select
     e.id,
     e.code,
     e.name,
-    e.cnpj,
     e.raw_label,
     e.access_token,
     count(emp.id)                                            as total_employees,
     count(emp.id) filter (where emp.card_received)            as received_count,
     case when count(emp.id) = 0 then 0
          else round(100.0 * count(emp.id) filter (where emp.card_received) / count(emp.id), 1)
-    end                                                        as pct_complete
+    end                                                        as pct_complete,
+    e.cnpj
 from establishments e
 left join employees emp on emp.establishment_id = e.id
-group by e.id, e.code, e.name, e.cnpj, e.raw_label, e.access_token
+group by e.id, e.code, e.name, e.raw_label, e.access_token, e.cnpj
 order by e.name;
 
 -- ---------------------------------------------------------
