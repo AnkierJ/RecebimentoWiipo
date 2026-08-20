@@ -15,6 +15,10 @@ import plotly.graph_objects as go
 import qrcode
 import streamlit as st
 from PIL import Image
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from reportlab.lib.utils import ImageReader, simpleSplit
+from reportlab.pdfgen import canvas as pdf_canvas
 from supabase import create_client
 
 ASSETS_DIR = Path(__file__).parent / "Assets"
@@ -92,6 +96,57 @@ def make_qr_png(data: str) -> bytes:
 
 def build_link(base_url: str, token: str) -> str:
     return f"{base_url.rstrip('/')}/?token={token}"
+
+
+def build_qr_sheet_pdf(establishments: list[dict], base_url: str) -> bytes:
+    """PDF em preto e branco, 6 QR Codes por folha A4 (2 colunas x 3 linhas),
+    cada um com o código e o nome da unidade abaixo, prontos para impressão e corte."""
+    page_w, page_h = A4
+    cols, rows_per_page = 2, 3
+    margin = 12 * mm
+    cell_w = (page_w - 2 * margin) / cols
+    cell_h = (page_h - 2 * margin) / rows_per_page
+    qr_size = 52 * mm
+    per_page = cols * rows_per_page
+
+    buf = BytesIO()
+    c = pdf_canvas.Canvas(buf, pagesize=A4)
+
+    for i, est in enumerate(establishments):
+        pos = i % per_page
+        if pos == 0 and i != 0:
+            c.showPage()
+        col, row = pos % cols, pos // cols
+        cell_x = margin + col * cell_w
+        cell_y = page_h - margin - (row + 1) * cell_h
+
+        # guia de corte
+        c.setStrokeGray(0.75)
+        c.setDash(3, 2)
+        c.setLineWidth(0.4)
+        c.rect(cell_x, cell_y, cell_w, cell_h)
+        c.setDash()
+
+        link = build_link(base_url, est["access_token"])
+        qr_img = ImageReader(BytesIO(make_qr_png(link)))
+        qr_x = cell_x + (cell_w - qr_size) / 2
+        qr_y = cell_y + cell_h - 8 * mm - qr_size
+        c.drawImage(qr_img, qr_x, qr_y, width=qr_size, height=qr_size)
+
+        c.setFillGray(0)
+        c.setFont("Helvetica-Bold", 10)
+        c.drawCentredString(cell_x + cell_w / 2, qr_y - 6 * mm, est["code"])
+
+        c.setFont("Helvetica", 8)
+        name_lines = simpleSplit(est["name"], "Helvetica", 8, cell_w - 8 * mm)[:2]
+        text_y = qr_y - 10.5 * mm
+        for line in name_lines:
+            c.drawCentredString(cell_x + cell_w / 2, text_y, line)
+            text_y -= 3.6 * mm
+
+    c.save()
+    buf.seek(0)
+    return buf.getvalue()
 
 
 def bulk_update_employees(client, ids: list[str], received: bool, updated_by: str | None):
@@ -192,9 +247,28 @@ def admin_view(client):
         .to_csv(index=False)
         .encode("utf-8")
     )
-    st.download_button(
-        "Baixar todos os links (CSV)", csv_bytes, file_name="links_gestores.csv", mime="text/csv"
-    )
+    dl_col1, dl_col2 = st.columns(2)
+    with dl_col1:
+        st.download_button(
+            "Baixar todos os links (CSV)",
+            csv_bytes,
+            file_name="links_gestores.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+    with dl_col2:
+        if st.button("Gerar PDF com todos os QR Codes", use_container_width=True):
+            with st.spinner("Gerando PDF..."):
+                records = df.sort_values("name").to_dict("records")
+                st.session_state["qr_pdf_bytes"] = build_qr_sheet_pdf(records, base_url)
+        if st.session_state.get("qr_pdf_bytes"):
+            st.download_button(
+                "Baixar PDF (6 por folha A4, P&B)",
+                st.session_state["qr_pdf_bytes"],
+                file_name="qrcodes_estabelecimentos.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
 
     st.subheader("Gerar QR Code / link de um estabelecimento")
     df_sorted = df.sort_values("name")
@@ -225,10 +299,60 @@ def admin_view(client):
             "O gestor pode voltar a ele quantas vezes precisar para atualizar o progresso."
         )
 
+    st.markdown(f"**Detalhamento — {choice}**")
+    detail_rows = (
+        client.table("employees")
+        .select("nome, cargo, card_received, received_at, updated_by, manually_added")
+        .eq("establishment_id", row.id)
+        .order("nome")
+        .execute()
+        .data
+    )
+    detail_df = pd.DataFrame(detail_rows)
+
+    if detail_df.empty:
+        st.caption("Nenhum colaborador cadastrado nesta unidade.")
+    else:
+        received_df = detail_df[detail_df["card_received"]].copy()
+        pending_df = detail_df[~detail_df["card_received"]].copy()
+
+        tab_received, tab_pending = st.tabs(
+            [f"✅ Recebido ({len(received_df)})", f"⬜ Pendente ({len(pending_df)})"]
+        )
+        with tab_received:
+            if received_df.empty:
+                st.caption("Ninguém confirmado ainda nesta unidade.")
+            else:
+                received_df["Origem"] = received_df["manually_added"].apply(
+                    lambda m: "Adicionado pelo gestor" if m else "Lista do RH"
+                )
+                st.dataframe(
+                    received_df.rename(
+                        columns={
+                            "nome": "Colaborador",
+                            "cargo": "Cargo",
+                            "received_at": "Recebido em",
+                        }
+                    )[["Colaborador", "Cargo", "Recebido em", "Origem"]],
+                    hide_index=True,
+                    use_container_width=True,
+                )
+        with tab_pending:
+            if pending_df.empty:
+                st.caption("Todo mundo já recebeu nesta unidade.")
+            else:
+                st.dataframe(
+                    pending_df.rename(columns={"nome": "Colaborador", "cargo": "Cargo"})[
+                        ["Colaborador", "Cargo"]
+                    ],
+                    hide_index=True,
+                    use_container_width=True,
+                )
+
     st.subheader("Colaboradores adicionados manualmente pelos gestores")
     manual_rows = (
         client.table("employees")
-        .select("nome, cargo, updated_by, received_at, establishments(code, name)")
+        .select("nome, cargo, received_at, establishments(code, name)")
         .eq("manually_added", True)
         .order("received_at", desc=True)
         .execute()
@@ -243,7 +367,6 @@ def admin_view(client):
                     else "-",
                     "Colaborador": r["nome"],
                     "Cargo": r["cargo"],
-                    "Adicionado por": r["updated_by"] or "-",
                     "Data": r["received_at"],
                 }
                 for r in manual_rows
@@ -312,10 +435,6 @@ def manager_view(client, token: str):
     c3.metric("Conclusão", f"{round(100 * received / total, 1)}%")
     st.progress(received / total if total else 0.0)
 
-    manager_name = st.text_input(
-        "Seu nome (fica registrado como responsável pela confirmação)", key="manager_name"
-    )
-
     search = st.text_input("Buscar colaborador por nome", key="manager_search")
     filtered_df = base_df.copy()
     if search:
@@ -358,18 +477,37 @@ def manager_view(client, token: str):
     if filtered_df.empty:
         st.info("Nenhum colaborador encontrado para essa busca.")
 
-    if st.button("Salvar alterações", type="primary", use_container_width=True):
-        ids_to_confirm = [
-            emp_id
-            for emp_id, already_received in zip(base_df["id"], base_df["card_received"])
-            if not already_received and st.session_state.get(f"card_chk_{emp_id}")
-        ]
-        if ids_to_confirm:
-            bulk_update_employees(client, ids_to_confirm, True, manager_name)
-            st.success(f"{len(ids_to_confirm)} confirmação(ões) salva(s) com sucesso.")
-            st.rerun()
-        else:
-            st.info("Nenhuma marcação nova para salvar.")
+    st.markdown(
+        """
+        <style>
+        div.st-key-sticky_save_bar {
+            position: fixed;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 999;
+            padding: 0.75rem 1rem calc(0.75rem + env(safe-area-inset-bottom));
+            background: var(--background-color, #0B1330);
+            box-shadow: 0 -4px 16px rgba(0,0,0,0.35);
+        }
+        </style>
+        <div style="height:5rem;"></div>
+        """,
+        unsafe_allow_html=True,
+    )
+    with st.container(key="sticky_save_bar"):
+        if st.button("Salvar alterações", type="primary", use_container_width=True):
+            ids_to_confirm = [
+                emp_id
+                for emp_id, already_received in zip(base_df["id"], base_df["card_received"])
+                if not already_received and st.session_state.get(f"card_chk_{emp_id}")
+            ]
+            if ids_to_confirm:
+                bulk_update_employees(client, ids_to_confirm, True, None)
+                st.success(f"{len(ids_to_confirm)} confirmação(ões) salva(s) com sucesso.")
+                st.rerun()
+            else:
+                st.info("Nenhuma marcação nova para salvar.")
 
     st.divider()
     with st.expander("Colaborador recebeu o cartão mas não está na lista? Adicione aqui"):
@@ -386,7 +524,6 @@ def manager_view(client, token: str):
                         "cargo": new_cargo.strip() or None,
                         "card_received": True,
                         "received_at": datetime.now(timezone.utc).isoformat(),
-                        "updated_by": manager_name or None,
                         "manually_added": True,
                     }
                 ).execute()

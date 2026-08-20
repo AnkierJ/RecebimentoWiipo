@@ -4,3 +4,4 @@ pandas>=2.0
 plotly>=5.20
 qrcode[pil]>=7.4
 Pillow>=10.0
+reportlab>=4.0
